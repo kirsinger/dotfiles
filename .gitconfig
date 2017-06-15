@@ -1,5 +1,6 @@
 [user]
-	email = kai.hirsinger@gmail.com
+    name = Kai Hirsinger
+    email = kai.hirsinger@gmail.com
 [push]
 	default = simple
 [credential]
