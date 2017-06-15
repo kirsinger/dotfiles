@@ -1,0 +1,8 @@
+[user]
+	email = kai.hirsinger@gmail.com
+[push]
+	default = simple
+[credential]
+    helper = cache
+[diff]
+	tool = meld
