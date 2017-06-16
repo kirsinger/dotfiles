@@ -61,8 +61,7 @@ imap <right> <nop>
 
 
 " Use the dark version of Solarized
-set background=dark
-colorscheme solarized
+colorscheme solarized8_dark_low
 
 " Backspace behaves as expected
 set backspace=indent,eol,start
