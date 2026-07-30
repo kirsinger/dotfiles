@@ -2,3 +2,5 @@ home/.config/herdr/*.log
 home/.config/herdr/session.json
 home/.config/herdr/*.sock
 home/.config/herdr/*.lock
+
+.DS_Store
