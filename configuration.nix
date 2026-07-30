@@ -44,7 +44,9 @@
     onActivation.autoUpdate = true;
     onActivation.extraFlags = [ "--force" ];
     brews = [
-      "herdr" 
+      "awscli"
+      "herdr"
+      "mise"
     ];
     casks = [
       "wezterm"
