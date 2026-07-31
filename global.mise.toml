@@ -1,0 +1,260 @@
+[env]
+EDITOR='nvim'
+
+# This is the GENERAL workspace config (~/projects). It is shared with sibling projects
+# (data-platform, onsite-ocr), so it deliberately holds NO project secrets and NO [tools] —
+# only cross-cutting tasks for managing git worktrees, agents, and dev sessions.
+#
+# The tasks are project-agnostic: they resolve "which project am I in?" from where you run
+# them (MISE_ORIGINAL_CWD) via `git --git-common-dir`, which points back to the project's
+# main checkout from any checkout/worktree/subdir. A project can declare specifics in its
+# own mise.toml that these tasks read:
+#   - WORKTREE_HOME : worktrees dir relative to ~/projects (default: "worktrees/<project>")
+#   - a `worktree_setup` task : per-worktree wiring (symlinks etc.), called after creation
+# (edrolo declares both in ~/projects/shared/edrolo.mise.toml.)
+
+#
+# Worktrees
+#
+
+[tasks.add_worktree]
+description = "Create a git worktree for the current project"
+usage = '''
+arg "<branch>" help="Branch to create a worktree from"
+complete "branch" run="R=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); R=${R%/.git}; (git -C \"$R\" branch --format='%(refname:short)'; git -C \"$R\" branch -r --format='%(refname:short)' | sed 's|^origin/||') | sort -u"
+'''
+run = """
+set -eu
+ROOT=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || true
+ROOT=${ROOT:+$(dirname "$ROOT")}
+if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
+  echo "Error: not inside a git project under ~/projects (cwd: $MISE_ORIGINAL_CWD)." >&2
+  exit 1
+fi
+PROJECT=$(basename "$ROOT")
+WORKTREES_DIR="$MISE_CONFIG_ROOT/${WORKTREE_HOME:-worktrees/$PROJECT}"
+
+BRANCH="{{ usage.branch }}"
+DIR_NAME=$(echo "$BRANCH" | tr '/' '-')
+WORKTREE_PATH="$WORKTREES_DIR/$DIR_NAME"
+mkdir -p "$WORKTREES_DIR"
+GIT="git -C $ROOT"
+if $GIT branch --list "$BRANCH" | grep -q .; then
+  $GIT worktree add "$WORKTREE_PATH" "$BRANCH"
+else
+  $GIT worktree add "$WORKTREE_PATH" -b "$BRANCH"
+fi
+
+# Run the project's worktree-setup hook if it defines one (edrolo: symlinks + per-checkout config).
+if mise -C "$ROOT" task info worktree_setup >/dev/null 2>&1; then
+  mise -C "$ROOT" run worktree_setup "$WORKTREE_PATH"
+fi
+"""
+
+[tasks.remove_worktree]
+description = "Remove a git worktree of the current project"
+usage = '''
+arg "<branch>" help="Worktree to remove"
+complete "branch" run="R=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); R=${R%/.git}; git -C \"$R\" worktree list --porcelain 2>/dev/null | sed -n 's|^worktree ||p' | tail -n +2 | xargs -n1 basename 2>/dev/null"
+'''
+run = """
+set -eu
+ROOT=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || true
+ROOT=${ROOT:+$(dirname "$ROOT")}
+if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
+  echo "Error: not inside a git project under ~/projects (cwd: $MISE_ORIGINAL_CWD)." >&2
+  exit 1
+fi
+PROJECT=$(basename "$ROOT")
+WORKTREES_DIR="$MISE_CONFIG_ROOT/${WORKTREE_HOME:-worktrees/$PROJECT}"
+git -C "$ROOT" worktree remove --force "$WORKTREES_DIR/{{ usage.branch }}"
+"""
+
+[tasks.list_worktrees]
+description = "List git worktrees of the current project"
+run = """
+set -eu
+ROOT=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || true
+ROOT=${ROOT:+$(dirname "$ROOT")}
+if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
+  echo "Error: not inside a git project under ~/projects (cwd: $MISE_ORIGINAL_CWD)." >&2
+  exit 1
+fi
+git -C "$ROOT" worktree list
+"""
+
+#
+# Agents
+#
+
+[tasks.spawn_agent]
+description = "Spawn a Claude Code agent in a herdr workspace for a worktree"
+usage = '''
+arg "<worktree>" help="Worktree/branch to spawn an agent into"
+complete "worktree" run="R=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); R=${R%/.git}; (git -C \"$R\" branch --format='%(refname:short)'; git -C \"$R\" worktree list --porcelain 2>/dev/null | sed -n 's|^worktree ||p' | tail -n +2 | xargs -n1 basename) | sort -u"
+'''
+run = """
+set -eu
+ROOT=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || true
+ROOT=${ROOT:+$(dirname "$ROOT")}
+if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
+  echo "Error: not inside a git project under ~/projects (cwd: $MISE_ORIGINAL_CWD)." >&2
+  exit 1
+fi
+PROJECT=$(basename "$ROOT")
+WORKTREES_DIR="$MISE_CONFIG_ROOT/${WORKTREE_HOME:-worktrees/$PROJECT}"
+
+if [ -z "${HERDR_ENV:-}" ]; then
+  echo "Error: spawn_agent must be run from inside a herdr session." >&2
+  exit 1
+fi
+
+WORKTREE="{{ usage.worktree }}"
+DIR_NAME=$(echo "$WORKTREE" | tr '/' '-')
+WORKTREE_PATH="$WORKTREES_DIR/$DIR_NAME"
+if [ ! -d "$WORKTREE_PATH" ]; then
+  ( cd "$ROOT" && mise run add_worktree "$WORKTREE" )
+fi
+
+# One workspace per worktree, labelled by worktree name. herdr is agent-aware, so the
+# agent's live state (working/blocked/done) shows in the sidebar. --no-focus creates it
+# in the background (like tmux's detached new-window). Grab the root pane id from the
+# create response and launch claude into it with `pane run` (atomic submit, no send-keys).
+PANE=$(herdr workspace create --cwd "$WORKTREE_PATH" --label "$DIR_NAME" --no-focus \
+  | jq -r '.result.root_pane.pane_id')
+# `mise exec` applies the project's env (e.g. ANTHROPIC_API_KEY) + tools to claude.
+herdr pane run "$PANE" "mise exec -- claude"
+"""
+
+[tasks.kill_agent]
+description = "Close the herdr workspace running the agent for a worktree"
+usage = '''
+arg "<worktree>" help="Worktree whose agent workspace to close"
+complete "worktree" run="herdr workspace list 2>/dev/null | jq -r '.result.workspaces[].label' | sort -u"
+'''
+run = """
+set -eu
+WORKTREE="{{ usage.worktree }}"
+DIR_NAME=$(echo "$WORKTREE" | tr '/' '-')
+
+# Resolve the workspace id by label so it works regardless of what we're attached to.
+TARGET=$(herdr workspace list | jq -r --arg n "$DIR_NAME" \
+  'first(.result.workspaces[] | select(.label == $n) | .workspace_id) // empty')
+if [ -z "$TARGET" ]; then
+  echo "No agent workspace labelled '$DIR_NAME' found." >&2
+  exit 1
+fi
+herdr workspace close "$TARGET"
+"""
+
+#
+# Dev
+#
+
+[tasks.dev]
+description = "Open a herdr dev workspace for a project/worktree"
+usage = '''
+arg "[worktree]" help="Worktree to work in (defaults to the project's main checkout)"
+complete "worktree" run="R=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); R=${R%/.git}; (git -C \"$R\" branch --format='%(refname:short)'; git -C \"$R\" worktree list --porcelain 2>/dev/null | sed -n 's|^worktree ||p' | tail -n +2 | xargs -n1 basename) | sort -u"
+'''
+run = """
+set -eu
+ROOT=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || true
+ROOT=${ROOT:+$(dirname "$ROOT")}
+if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
+  echo "Error: not inside a git project under ~/projects (cwd: $MISE_ORIGINAL_CWD)." >&2
+  exit 1
+fi
+PROJECT=$(basename "$ROOT")
+WORKTREES_DIR="$MISE_CONFIG_ROOT/${WORKTREE_HOME:-worktrees/$PROJECT}"
+
+WORKTREE="{{ usage.worktree }}"
+if [ -z "$WORKTREE" ]; then
+  # No worktree given → the project's main checkout.
+  WORKTREE_PATH="$ROOT"
+  LABEL="$PROJECT"
+else
+  LABEL=$(echo "$WORKTREE" | tr '/' '-')
+  WORKTREE_PATH="$WORKTREES_DIR/$LABEL"
+  if [ ! -d "$WORKTREE_PATH" ]; then
+    ( cd "$ROOT" && mise run add_worktree "$WORKTREE" )
+  fi
+fi
+
+# Reuse an existing dev workspace for this target rather than clobbering it. The workspace
+# has a single tab: a plain shell cwd'd in the worktree (mise activates via the shell rc, so
+# the project env is live). Launch the agent yourself with `claude` once attached.
+WS=$(herdr workspace list | jq -r --arg n "$LABEL" \
+  'first(.result.workspaces[] | select(.label == $n) | .workspace_id) // empty')
+if [ -z "$WS" ]; then
+  CREATE=$(herdr workspace create --cwd "$WORKTREE_PATH" --label "$LABEL" --no-focus)
+  WS=$(echo "$CREATE" | jq -r '.result.workspace.workspace_id')
+  herdr tab rename "$(echo "$CREATE" | jq -r '.result.tab.tab_id')" agent
+fi
+
+# Focus the workspace. Works whether or not we're already attached to a herdr client.
+herdr workspace focus "$WS"
+"""
+
+#
+# App
+#
+
+# The Edrolo app services. Each line is "label|cwd|command". start_edrolo opens one tab per
+# service in the current dev workspace; stop_edrolo closes the tabs with these labels.
+# Keep the label list here in sync with stop_edrolo below.
+
+[tasks.start_edrolo]
+description = "Start the Edrolo app stack as tabs in the current dev workspace"
+run = """
+set -eu
+if [ -z "${HERDR_WORKSPACE_ID:-}" ]; then
+  echo "Error: run start_edrolo from inside a herdr dev workspace (open one with: mise run dev)." >&2
+  exit 1
+fi
+WS="$HERDR_WORKSPACE_ID"
+
+# Locate the Edrolo worktree from where we're running (the dev workspace is cwd'd in it).
+ROOT=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --show-toplevel 2>/dev/null) || true
+if [ -z "$ROOT" ] || [ ! -d "$ROOT/tod_project" ]; then
+  echo "Error: not inside an Edrolo worktree (no tod_project under '$ROOT')." >&2
+  exit 1
+fi
+
+# label|cwd|command  (kept in sync with stop_edrolo's label list)
+SERVICES="docker|$HOME|lazydocker
+django|$ROOT/tod_project|./manage.py runserver
+vite|$ROOT/tod_project/frontend|pnpm dev:no-gen
+react|$ROOT/tod_project/tod_django/react|yarn install && yarn run dev"
+
+printf '%s\\n' "$SERVICES" | while IFS='|' read -r label cwd cmd; do
+  # Idempotent: replace an existing tab for this service rather than duplicating it.
+  herdr tab list --workspace "$WS" | jq -r --arg l "$label" \
+    '.result.tabs[] | select(.label == $l) | .tab_id' \
+    | while read -r t; do herdr tab close "$t" >/dev/null 2>&1 || true; done
+  PANE=$(herdr tab create --workspace "$WS" --cwd "$cwd" --label "$label" \
+    | jq -r '.result.root_pane.pane_id')
+  herdr pane run "$PANE" "$cmd"
+  echo "started $label"
+done
+"""
+
+[tasks.stop_edrolo]
+description = "Stop the Edrolo app stack and close its tabs in the current dev workspace"
+run = """
+set -eu
+if [ -z "${HERDR_WORKSPACE_ID:-}" ]; then
+  echo "Error: run stop_edrolo from inside the herdr dev workspace where you started it." >&2
+  exit 1
+fi
+WS="$HERDR_WORKSPACE_ID"
+
+# Closing a tab kills its pane's process tree. Labels kept in sync with start_edrolo.
+for label in docker django vite react; do
+  herdr tab list --workspace "$WS" | jq -r --arg l "$label" \
+    '.result.tabs[] | select(.label == $l) | .tab_id' \
+    | while read -r t; do
+        herdr tab close "$t" >/dev/null 2>&1 && echo "stopped $label" || true
+      done
+done
+"""

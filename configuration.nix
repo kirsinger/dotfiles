@@ -45,7 +45,9 @@
     onActivation.extraFlags = [ "--force" ];
     brews = [
       "awscli"
+      "docker"
       "herdr"
+      "lazydocker"
       "mise"
     ];
     casks = [
