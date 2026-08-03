@@ -1,3 +1,7 @@
 {
-  "theme": "dark"
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true
+  },
+  "theme": "dark",
+  "agentPushNotifEnabled": true
 }

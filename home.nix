@@ -23,6 +23,14 @@ in
   fonts.fontconfig.enable = true;
   home.sessionVariables.EDITOR = "nvim";
 
+  programs.git = {
+    enable = true;
+    settings.user = {
+      name = "kirsinger";
+      email = "kai.hirsinger@gmail.com";
+    };
+  };
+
   programs.zsh = {
     enable = true;
     autosuggestion.enable = true;
@@ -38,11 +46,6 @@ in
       m = "git switch main";
       cc = "claude";
     };
-  };
-
-  programs.git.settings.user = {
-    name = "kirsinger";
-    email = "kai.hirsinger@gmail.com";
   };
 
   programs.starship = {

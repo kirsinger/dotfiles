@@ -181,6 +181,16 @@ else
   fi
 fi
 
+# The socket-API calls below need a running herdr server. The old tmux new-session
+# auto-started its server; mirror that by launching a headless one if none is up.
+if ! herdr status server 2>/dev/null | grep -q 'status: running'; then
+  nohup herdr server >/dev/null 2>&1 &
+  for _ in $(seq 1 50); do
+    herdr status server 2>/dev/null | grep -q 'status: running' && break
+    sleep 0.1
+  done
+fi
+
 # Reuse an existing dev workspace for this target rather than clobbering it. The workspace
 # has a single tab: a plain shell cwd'd in the worktree (mise activates via the shell rc, so
 # the project env is live). Launch the agent yourself with `claude` once attached.
@@ -189,11 +199,15 @@ WS=$(herdr workspace list | jq -r --arg n "$LABEL" \
 if [ -z "$WS" ]; then
   CREATE=$(herdr workspace create --cwd "$WORKTREE_PATH" --label "$LABEL" --no-focus)
   WS=$(echo "$CREATE" | jq -r '.result.workspace.workspace_id')
-  herdr tab rename "$(echo "$CREATE" | jq -r '.result.tab.tab_id')" agent
+  herdr tab rename "$(echo "$CREATE" | jq -r '.result.tab.tab_id')" agent >/dev/null
 fi
+herdr workspace focus "$WS" >/dev/null
 
-# Focus the workspace. Works whether or not we're already attached to a herdr client.
-herdr workspace focus "$WS"
+# Attach this terminal to the session, unless we're already inside a herdr client — in that
+# case the focus above already switched the view.
+if [ -z "${HERDR_ENV:-}" ]; then
+  herdr session attach default
+fi
 """
 
 #

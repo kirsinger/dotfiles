@@ -26,6 +26,10 @@
     dock.persistent-apps = [
       { app = "/Applications/WezTerm.app"; }
       { app = "/Applications/Orion.app"; }
+      { app = "/Applications/Google Chrome.app"; }
+      { app = "/Applications/Figma.app"; }
+      { app = "/Applications/Slack.app"; }
+      { app = "/Applications/Utilities"; }
     ];
     dock.persistent-others = [];
     finder.FXPreferredViewStyle = "Nlsv";  # List view by default
@@ -51,8 +55,11 @@
       "mise"
     ];
     casks = [
+      "claude-code"
+      "figma"
+      "karabiner-elements"
+      "slack"
       "wezterm"
-      "claude-code" 
     ];
   };
 }
