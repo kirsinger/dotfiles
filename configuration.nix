@@ -50,6 +50,7 @@
     brews = [
       "awscli"
       "docker"
+      "gum"
       "herdr"
       "lazydocker"
       "mise"
