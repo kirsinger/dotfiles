@@ -50,6 +50,7 @@
     brews = [
       "awscli"
       "docker"
+      "gnu-getopt"
       "gum"
       "herdr"
       "lazydocker"
