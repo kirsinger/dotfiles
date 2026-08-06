@@ -54,7 +54,10 @@
       "gum"
       "herdr"
       "lazydocker"
+      "luarocks"
       "mise"
+      "node"
+      "wget"
     ];
     casks = [
       "claude-code"
