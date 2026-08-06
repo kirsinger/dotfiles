@@ -1,9 +1,16 @@
 return {
   {
-    'stevearc/oil.nvim',
-    opts = { view_options = { show_hidden = true } },
-    keys = { { '<leader>e', '<cmd>Oil<cr>', desc = 'File Browser' } },
+    "nvim-neo-tree/neo-tree.nvim",
+    branch = "v3.x",
+    dependencies = {
+      "nvim-lua/plenary.nvim",
+      "MunifTanjim/nui.nvim",
+      "nvim-tree/nvim-web-devicons", -- optional, but recommended
+    },
+    lazy = false,
+    keys = { { '<leader>e', '<cmd>Neotree<cr>', desc = 'File Browser' } },
   },
+
   {
     'folke/snacks.nvim',
     priority = 1000,
