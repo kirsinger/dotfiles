@@ -6,10 +6,18 @@
   nixpkgs.config.allowUnfree = true;
   nixpkgs.hostPlatform = "aarch64-darwin";
 
-  system.primaryUser = "kai"; 
+  system.primaryUser = "kai";
   users.users.kai = {
     home = "/Users/kai";
-  }; 
+  };
+
+  # pyzbar (used by the edrolo project) locates libzbar via
+  # ctypes.util.find_library("zbar"), which searches /usr/local/lib but NOT
+  # Homebrew's /opt/homebrew/lib on Apple Silicon.
+  system.activationScripts.postActivation.text = ''
+    mkdir -p /usr/local/lib
+    ln -sf /opt/homebrew/lib/libzbar.dylib /usr/local/lib/libzbar.dylib
+  '';
 
   system.stateVersion = 6;
   system.defaults = {
@@ -49,7 +57,8 @@
     onActivation.extraFlags = [ "--force" ];
     brews = [
       "awscli"
-      "docker"
+      "buildkite/buildkite/bk@3"
+      "gh"
       "gnu-getopt"
       "gum"
       "herdr"
@@ -57,10 +66,16 @@
       "luarocks"
       "mise"
       "node"
+      "pnpm"
+      "tuicr"
+      "uv"
       "wget"
+      "yarn"
+      "zbar"
     ];
     casks = [
       "claude-code"
+      "docker-desktop"
       "figma"
       "karabiner-elements"
       "slack"

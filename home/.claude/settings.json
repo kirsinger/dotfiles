@@ -1,6 +1,17 @@
 {
   "enabledPlugins": {
-    "superpowers@claude-plugins-official": true
+    "superpowers@claude-plugins-official": true,
+    "edrolo-design-system@edrolo-ai-toolbox": true,
+    "greenkeeper@edrolo-ai-toolbox": true,
+    "read-buildkite-failures@edrolo-ai-toolbox": true
+  },
+  "extraKnownMarketplaces": {
+    "edrolo-ai-toolbox": {
+      "source": {
+        "source": "github",
+        "repo": "Edrolo/ai-toolbox"
+      }
+    }
   },
   "theme": "dark",
   "agentPushNotifEnabled": true

@@ -21,7 +21,14 @@ in
   ];
 
   fonts.fontconfig.enable = true;
-  home.sessionVariables.EDITOR = "nvim";
+  
+  home.sessionVariables = {
+    EDITOR = "nvim";
+  };
+
+  home.sessionPath = [
+    "$HOME/.local/share/mise/shims" 
+  ];
 
   programs.git = {
     enable = true;
@@ -37,6 +44,20 @@ in
     syntaxHighlighting.enable = true;
     initContent = ''
       bindkey '^f' autosuggest-accept
+      
+      #
+      # AWS profiles
+      #
+      
+      awsp() {
+        export AWS_PROFILE="$1"
+        export AWS_REGION=ap-southeast-2
+      }
+      
+      _awsp_complete() {
+        COMPREPLY=( $(compgen -W "$(sed -n 's/^\[profile \(.*\)\]$/\1/p; s/^\[\(.*\)\]$/\1/p' ~/.aws/config 2>/dev/null)" -- "$cur") )
+      }
+      complete -F _awsp_complete awsp
     '';
     shellAliases = {
       ".." = "cd ..";
@@ -61,6 +82,8 @@ in
     };
   };
 
+  home.file.".bash_profile".source =
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.bash_profile";
   home.file.".config/wezterm".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.config/wezterm";
   home.file.".config/nvim".source =
