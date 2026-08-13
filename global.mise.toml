@@ -32,10 +32,11 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
   exit 1
 fi
 PROJECT=$(basename "$ROOT")
-# Resolve WORKTREE_HOME from the PROJECT's own config (via ROOT), not the ambient env —
-# the ambient value depends on where you launched from, so a cwd whose config chain lacks
-# it would silently fall back to the "worktrees/$PROJECT" default and misplace the worktree.
-WT_HOME=$(mise -C "$ROOT" env 2>/dev/null | sed -n 's/^export WORKTREE_HOME=//p' | head -1)
+# Read WORKTREE_HOME straight from the project's own mise.toml (the documented contract).
+# We parse the file rather than use `mise env`: a nested `mise` invoked from inside a running
+# mise task does NOT re-resolve the project's env, so it returns nothing and we'd silently
+# fall back to the default and misplace the worktree. Defaults to "worktrees/<project>".
+WT_HOME=$(sed -n 's/^[[:space:]]*WORKTREE_HOME[[:space:]]*=[[:space:]]*//p' "$ROOT/mise.toml" 2>/dev/null | head -1 | tr -d '\" ')
 WORKTREES_DIR="$MISE_CONFIG_ROOT/${WT_HOME:-worktrees/$PROJECT}"
 
 BRANCH="{{ usage.branch }}"
@@ -70,10 +71,11 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
   exit 1
 fi
 PROJECT=$(basename "$ROOT")
-# Resolve WORKTREE_HOME from the PROJECT's own config (via ROOT), not the ambient env —
-# the ambient value depends on where you launched from, so a cwd whose config chain lacks
-# it would silently fall back to the "worktrees/$PROJECT" default and misplace the worktree.
-WT_HOME=$(mise -C "$ROOT" env 2>/dev/null | sed -n 's/^export WORKTREE_HOME=//p' | head -1)
+# Read WORKTREE_HOME straight from the project's own mise.toml (the documented contract).
+# We parse the file rather than use `mise env`: a nested `mise` invoked from inside a running
+# mise task does NOT re-resolve the project's env, so it returns nothing and we'd silently
+# fall back to the default and misplace the worktree. Defaults to "worktrees/<project>".
+WT_HOME=$(sed -n 's/^[[:space:]]*WORKTREE_HOME[[:space:]]*=[[:space:]]*//p' "$ROOT/mise.toml" 2>/dev/null | head -1 | tr -d '\" ')
 WORKTREES_DIR="$MISE_CONFIG_ROOT/${WT_HOME:-worktrees/$PROJECT}"
 git -C "$ROOT" worktree remove --force "$WORKTREES_DIR/{{ usage.branch }}"
 """
@@ -110,10 +112,11 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
   exit 1
 fi
 PROJECT=$(basename "$ROOT")
-# Resolve WORKTREE_HOME from the PROJECT's own config (via ROOT), not the ambient env —
-# the ambient value depends on where you launched from, so a cwd whose config chain lacks
-# it would silently fall back to the "worktrees/$PROJECT" default and misplace the worktree.
-WT_HOME=$(mise -C "$ROOT" env 2>/dev/null | sed -n 's/^export WORKTREE_HOME=//p' | head -1)
+# Read WORKTREE_HOME straight from the project's own mise.toml (the documented contract).
+# We parse the file rather than use `mise env`: a nested `mise` invoked from inside a running
+# mise task does NOT re-resolve the project's env, so it returns nothing and we'd silently
+# fall back to the default and misplace the worktree. Defaults to "worktrees/<project>".
+WT_HOME=$(sed -n 's/^[[:space:]]*WORKTREE_HOME[[:space:]]*=[[:space:]]*//p' "$ROOT/mise.toml" 2>/dev/null | head -1 | tr -d '\" ')
 WORKTREES_DIR="$MISE_CONFIG_ROOT/${WT_HOME:-worktrees/$PROJECT}"
 
 if [ -z "${HERDR_ENV:-}" ]; then
@@ -178,10 +181,11 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
   exit 1
 fi
 PROJECT=$(basename "$ROOT")
-# Resolve WORKTREE_HOME from the PROJECT's own config (via ROOT), not the ambient env —
-# the ambient value depends on where you launched from, so a cwd whose config chain lacks
-# it would silently fall back to the "worktrees/$PROJECT" default and misplace the worktree.
-WT_HOME=$(mise -C "$ROOT" env 2>/dev/null | sed -n 's/^export WORKTREE_HOME=//p' | head -1)
+# Read WORKTREE_HOME straight from the project's own mise.toml (the documented contract).
+# We parse the file rather than use `mise env`: a nested `mise` invoked from inside a running
+# mise task does NOT re-resolve the project's env, so it returns nothing and we'd silently
+# fall back to the default and misplace the worktree. Defaults to "worktrees/<project>".
+WT_HOME=$(sed -n 's/^[[:space:]]*WORKTREE_HOME[[:space:]]*=[[:space:]]*//p' "$ROOT/mise.toml" 2>/dev/null | head -1 | tr -d '\" ')
 WORKTREES_DIR="$MISE_CONFIG_ROOT/${WT_HOME:-worktrees/$PROJECT}"
 
 WORKTREE="{{ usage.worktree }}"
