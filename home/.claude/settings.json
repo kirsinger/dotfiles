@@ -3,7 +3,8 @@
     "superpowers@claude-plugins-official": true,
     "edrolo-design-system@edrolo-ai-toolbox": true,
     "greenkeeper@edrolo-ai-toolbox": true,
-    "read-buildkite-failures@edrolo-ai-toolbox": true
+    "read-buildkite-failures@edrolo-ai-toolbox": true,
+    "coderabbit@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
     "edrolo-ai-toolbox": {

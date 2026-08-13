@@ -75,6 +75,7 @@
     ];
     casks = [
       "claude-code"
+      "coderabbit"
       "docker-desktop"
       "figma"
       "karabiner-elements"
