@@ -35,6 +35,7 @@
       { app = "/Applications/WezTerm.app"; }
       { app = "/Applications/Orion.app"; }
       { app = "/Applications/Google Chrome.app"; }
+      { app = "/Applications/Obsidian.app"; }
       { app = "/Applications/Figma.app"; }
       { app = "/Applications/Slack.app"; }
       { app = "/Applications/Utilities"; }
@@ -79,6 +80,7 @@
       "docker-desktop"
       "figma"
       "karabiner-elements"
+      "obsidian"
       "slack"
       "wezterm"
     ];
