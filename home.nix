@@ -58,6 +58,11 @@ in
         COMPREPLY=( $(compgen -W "$(sed -n 's/^\[profile \(.*\)\]$/\1/p; s/^\[\(.*\)\]$/\1/p' ~/.aws/config 2>/dev/null)" -- "$cur") )
       }
       complete -F _awsp_complete awsp
+
+      #
+      # Load SSH keys into keychain
+      #
+      ssh-add --apple-load-keychain -q
     '';
     shellAliases = {
       ".." = "cd ..";
