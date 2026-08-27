@@ -94,4 +94,6 @@ in
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/settings.json";
   home.file."projects/mise.toml".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/global.mise.toml";
+  home.file."projects/AGENTS.md".source =
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/AGENTS.md";
 }
