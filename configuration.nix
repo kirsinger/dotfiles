@@ -61,6 +61,7 @@
       "buildkite/buildkite/bk@3"
       "gh"
       "gnu-getopt"
+      "go-parquet-tools"
       "gum"
       "herdr"
       "lazydocker"
