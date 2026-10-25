@@ -93,6 +93,155 @@ fi
 git -C "$ROOT" worktree list
 """
 
+[tasks.clean_worktrees]
+description = "Flag stale or merged worktrees of the current project and remove them on confirmation"
+usage = '''
+flag "--days <days>" default="14" help="Flag worktrees unused for more than this many days"
+flag "--force" help="Also remove worktrees with uncommitted or untracked changes"
+'''
+run = """
+set -eu
+ROOT=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || true
+ROOT=${ROOT:+$(dirname "$ROOT")}
+if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
+  echo "Error: not inside a git project under ~/projects (cwd: $MISE_ORIGINAL_CWD)." >&2
+  exit 1
+fi
+DAYS="{{ usage.days }}"
+FORCE="{{ usage.force }}"
+HERE=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --show-toplevel)
+G="git -C $ROOT"
+
+# --prune drops remote-tracking refs for deleted branches, which "upstream deleted" relies on.
+$G fetch --prune --quiet origin 2>/dev/null || echo "Warning: fetch failed; merge checks use possibly stale refs." >&2
+BASE=$($G symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo master)
+
+NOW=$(date +%s)
+FLAGGED=$(mktemp)
+trap 'rm -f "$FLAGGED"' EXIT
+
+# Porcelain records are blank-line separated; the first is the main checkout.
+$G worktree list --porcelain | awk '
+  /^worktree / { path = substr($0, 10); branch = ""; locked = 0 }
+  /^branch /   { branch = substr($0, 19) }
+  /^locked/    { locked = 1 }
+  /^$/         { if (n++ && !locked) print path "|" branch; path = "" }
+  END          { if (path != "" && n++ && !locked) print path "|" branch }
+' > "$FLAGGED.all"
+echo "Checking $(wc -l < "$FLAGGED.all" | tr -d ' ') worktrees against $BASE..."
+
+while IFS='|' read -r path branch; do
+  [ "$path" = "$HERE" ] && continue
+  reasons=""
+  merged=""
+  dirty=""
+  if [ ! -d "$path" ]; then
+    reasons="directory missing"
+  else
+    # Last use: newest of the HEAD commit, the index (rewritten by status/add/checkout) and
+    # the HEAD reflog (commits, checkouts, resets).
+    last=$(git -C "$path" log -1 --format=%ct HEAD)
+    GD=$(git -C "$path" rev-parse --absolute-git-dir)
+    for f in "$GD/index" "$GD/logs/HEAD"; do
+      [ -e "$f" ] || continue
+      m=$(stat -f %m "$f")
+      [ "$m" -gt "$last" ] && last=$m
+    done
+    age=$(( (NOW - last) / 86400 ))
+    [ "$age" -gt "$DAYS" ] && reasons="unused ${age}d"
+    # --no-optional-locks: a plain status refreshes the index, which would reset its mtime.
+    [ -n "$(git -C "$path" --no-optional-locks status --porcelain | head -1)" ] && dirty=1
+  fi
+
+  if [ -n "$branch" ]; then
+    tip=$($G rev-parse "refs/heads/$branch")
+    created=$($G reflog show --format=%H "refs/heads/$branch" 2>/dev/null | tail -1)
+    # A branch with no commits since creation is trivially an ancestor of BASE; that is
+    # not a merge.
+    if [ "$tip" != "$created" ]; then
+      if $G merge-base --is-ancestor "$tip" "$BASE"; then
+        merged="merged into $BASE"
+      else
+        # Squash merges leave no ancestry. Collapse the branch into one commit on its
+        # merge-base and ask git cherry whether BASE already has an equivalent patch.
+        mb=$($G merge-base "$tip" "$BASE" || true)
+        if [ -n "$mb" ]; then
+          probe=$($G commit-tree "$tip^{tree}" -p "$mb" -m probe)
+          case $($G cherry "$BASE" "$probe") in -*) merged="squash-merged into $BASE" ;; esac
+        fi
+      fi
+    fi
+    if [ "$($G for-each-ref --format='%(upstream:track)' "refs/heads/$branch")" = "[gone]" ]; then
+      merged="${merged:+$merged, }upstream deleted"
+    fi
+  fi
+
+  if [ -n "$merged" ]; then
+    reasons="${reasons:+$reasons, }$merged"
+  fi
+  [ -n "$reasons" ] && echo "$path|$branch|$reasons|$merged|$dirty" >> "$FLAGGED"
+done < "$FLAGGED.all"
+rm -f "$FLAGGED.all"
+
+if [ ! -s "$FLAGGED" ]; then
+  echo "Nothing to clean up."
+  exit 0
+fi
+
+echo
+{
+  echo "WORKTREE|BRANCH|REASON|ACTION"
+  while IFS='|' read -r path branch reasons merged dirty; do
+    if [ -n "$dirty" ] && [ "$FORCE" != "true" ]; then
+      action="skip: uncommitted changes (use --force)"
+    elif [ -n "$merged" ] && [ -n "$branch" ]; then
+      action="remove worktree + branch"
+    else
+      action="remove worktree, keep branch"
+    fi
+    [ -n "$dirty" ] && [ "$FORCE" = "true" ] && action="$action (discards changes)"
+    echo "$(basename "$path")|${branch:-detached}|$reasons|$action"
+  done < "$FLAGGED"
+} | column -t -s '|'
+echo
+
+TOTAL=$(wc -l < "$FLAGGED" | tr -d ' ')
+SKIP=0
+[ "$FORCE" != "true" ] && SKIP=$(awk -F'|' '$5 != ""' "$FLAGGED" | wc -l | tr -d ' ')
+if [ $((TOTAL - SKIP)) -eq 0 ]; then
+  echo "All flagged worktrees have uncommitted changes; rerun with --force to remove them."
+  exit 0
+fi
+if ! ( : < /dev/tty ) 2>/dev/null; then
+  echo "Error: confirmation needs a terminal; nothing removed." >&2
+  exit 1
+fi
+printf 'Remove %s worktree(s)? [y/N] ' "$((TOTAL - SKIP))"
+read -r answer < /dev/tty || answer=""
+case "$answer" in
+  y|Y|yes|YES) ;;
+  *) echo "Aborted; nothing removed."; exit 0 ;;
+esac
+
+while IFS='|' read -r path branch reasons merged dirty; do
+  if [ -n "$dirty" ] && [ "$FORCE" != "true" ]; then
+    continue
+  fi
+  if [ -d "$path" ]; then
+    # Cleanliness was checked during the scan; --force here only matters for dirty
+    # worktrees the user opted into, and submodules.
+    $G worktree remove --force "$path"
+  else
+    $G worktree prune
+  fi
+  echo "removed $(basename "$path")"
+  # -D: squash-merged branches aren't ancestors of BASE, so -d would refuse them.
+  if [ -n "$merged" ] && [ -n "$branch" ]; then
+    $G branch -D "$branch" >/dev/null && echo "  deleted branch $branch"
+  fi
+done < "$FLAGGED"
+"""
+
 #
 # Agents
 #
