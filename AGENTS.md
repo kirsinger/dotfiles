@@ -1,4 +1,5 @@
 Global guidelines for working on repositories in this directory:
+- Please remove all mannered prose.
 - When writing code comments:
   - Don't comment what the code does, assume the reader knows the language.
   - Succinct comments where something may be easily misunderstood or incorrect assumptions made. minimal is preferred.

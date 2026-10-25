@@ -1,2 +1,0 @@
--- TODO: LSP keybindings
-return {};
