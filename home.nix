@@ -63,6 +63,11 @@ in
       # Load SSH keys into keychain
       #
       ssh-add --apple-load-keychain -q
+
+      #
+      # mise: shims only provide tools; activation also applies each project's [env]
+      #
+      eval "$(mise activate zsh)"
     '';
     shellAliases = {
       ".." = "cd ..";
@@ -99,6 +104,8 @@ in
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/settings.json";
   home.file."projects/mise.toml".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/global.mise.toml";
+  home.file."projects/shared/edrolo.mise.toml".source =
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/edrolo.mise.toml";
   home.file.".claude/CLAUDE.md".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/AGENTS.md";
 }

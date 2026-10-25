@@ -1,0 +1,155 @@
+# Edrolo per-checkout mise config.
+#
+# home-manager links ~/projects/shared/edrolo.mise.toml here, and the main checkout and
+# every worktree symlink their mise.toml to that path. mise resolves relative paths (e.g.
+# `.venv`) against the symlink's directory, i.e. the checkout.
+#
+# Secrets are not kept here: they live in ~/projects/shared/edrolo.secrets.env (dotenv
+# format, untracked, mode 600) and are loaded via `_.file` below.
+
+# Toolchain versions, pinned to match the project's declared requirements.
+[tools]
+python = "3.11"      # matches pyproject requires-python ">=3.11,<3.12"
+node = "22"          # matches frontend Dockerfile (node:22) + compose; satisfies react engines >=18.17
+pnpm = "10.33.4"     # matches frontend/package.json packageManager pin
+yarn = "1.22.22"     # matches react/package.json packageManager pin
+uv = "0.9.7"         # matches CI (.buildkite/pipeline.ci.yml) + edrolo.Dockerfile
+
+[env]
+# Must stay first: later entries (TUNNEL_PGPASSWORD) template values from this file.
+_.file = "{{ env.HOME }}/projects/shared/edrolo.secrets.env"
+_.python.venv = { path = ".venv", create = true }
+
+# edrolo's worktrees use the legacy FLAT layout (~/projects/worktrees/<branch>).
+# The generalized tasks read this; without it they'd default to ~/projects/worktrees/<project>.
+WORKTREE_HOME = "worktrees"
+
+# For DB Tunnelling
+TUNNEL_PGPASSWORD = "{{ env.PGPASSWORD }}"
+
+# This is required for local deployments
+# I can never get it to work, so I just skip the new relic notification step
+NEW_RELIC_X_API_KEY = "foo"
+
+# Go SSE service (sse-service) — required env (see sse-service/README.md). REDIS_URL must
+# point at Django's EVENTS_CACHE_REDIS_DB (DB 3, classysettings/base.py). `run_edrolo` runs
+# honcho via `mise exec`, so these must be in mise env (not just an interactive shell).
+REDIS_URL = "redis://localhost:6379/3"
+JWT_SECRET = "dev-secret-key"
+
+# Ensures Celery works as expected on MacOS
+OBJC_DISABLE_INITIALIZE_FORK_SAFETY='YES'
+
+#
+# Dependencies
+#
+
+[tasks.sync_venv]
+description = "Create (if missing) and sync this checkout's venv from its uv.lock"
+run = """
+set -eu
+export UV_PROJECT_ENVIRONMENT="$MISE_CONFIG_ROOT/.venv"
+if [ ! -e "$UV_PROJECT_ENVIRONMENT" ]; then
+  uv venv --python 3.11 "$UV_PROJECT_ENVIRONMENT"
+fi
+uv sync --project "$MISE_CONFIG_ROOT"
+"""
+
+[tasks.sync_node]
+description = "Install/refresh node_modules: frontend (pnpm) + the shared react (yarn1) deps"
+run = """
+set -eu
+# frontend: pnpm workspace, installed per-checkout via pnpm's global store (fast).
+( cd "$MISE_CONFIG_ROOT/tod_project/frontend" && pnpm install )
+# react: node_modules symlinks to shared/react-node_modules, so this updates the shared copy.
+( cd "$MISE_CONFIG_ROOT/tod_project/tod_django/react" && yarn install )
+"""
+
+#
+# AWS
+#
+
+[tasks.aws_sso]
+description = "Authenticate with AWS via SSO"
+run = "/opt/homebrew/bin/aws sso login --no-browser --sso-session edrolo-sso"
+
+[tasks.aws_profile]
+description = "Sets the profile used by the AWS CLI"
+usage = '''
+arg "<profile>" help="The profile to use" {
+  choices "production-admin" "developer-admin" "developer-power" "developer-readonly"
+}
+'''
+run = "export AWS_PROFILE='{{ usage.profile }}'"
+
+[tasks.db_tunnel]
+description = "Open an SSH tunnel to a dev DB on port 3333"
+run = "$MISE_CONFIG_ROOT/edx/devstack/db-tunnel.sh --local-port 3333"
+
+[tasks.fargate_shell]
+description = "Open an interactive shell inside a running Fargate task"
+usage = '''
+arg "<environment>" help="Environment to connect to" {
+  choices "production-au" "matt-stack"
+}
+arg "<service>" help="Service to connect to" {
+  choices "web" "worker" "sse" "low-priority-worker"
+}
+'''
+run = """
+set -euo pipefail
+REGION="ap-southeast-2"
+CLUSTER="{{ usage.environment }}-web-cluster"
+SERVICE="{{ usage.environment }}-{{ usage.service }}-service"
+
+echo "Looking up a running task for $SERVICE..."
+TASK_ARN=$(aws ecs list-tasks --region "$REGION" --cluster "$CLUSTER" --service-name "$SERVICE" --desired-status RUNNING | jq --raw-output ".taskArns | first")
+if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "null" ]; then
+  echo "No running tasks found for $SERVICE" >&2
+  exit 1
+fi
+echo "Found task: $TASK_ARN"
+
+cleanup() {
+  set +e
+  echo "Disabling task protection..."
+  aws ecs update-task-protection --region "$REGION" --cluster "$CLUSTER" --tasks "$TASK_ARN" --no-protection-enabled >/dev/null 2>&1
+}
+trap cleanup EXIT
+
+echo "Enabling task protection (10 minutes)..."
+aws ecs update-task-protection --region "$REGION" --cluster "$CLUSTER" --tasks "$TASK_ARN" --protection-enabled --expires-in-minutes 10 >/dev/null
+
+echo "Opening interactive shell (/bin/bash)..."
+aws ecs execute-command --region "$REGION" --cluster "$CLUSTER" --task "$TASK_ARN" --command "/bin/bash" --interactive
+"""
+
+#
+# Worktrees (edrolo-specific setup, called by the generalized add_worktree)
+#
+
+[tasks.worktree_setup]
+description = "Set up a freshly-created edrolo worktree (symlinks, per-checkout config, venv)"
+usage = '''
+arg "<path>" help="Path to the newly-created worktree"
+'''
+run = """
+set -eu
+WT="{{ usage.path }}"
+
+ln -s ../../../../shared/local.py "$WT/tod_project/classysettings/local.py"
+ln -s ../../shared/edrolo.mise.toml "$WT/mise.toml"
+mise trust "$WT"
+
+# Each worktree gets its own venv; deps may differ between branches.
+uv venv --python 3.11 "$WT/.venv"
+( cd "$WT" && UV_PROJECT_ENVIRONMENT="$WT/.venv" uv sync )
+
+# Legacy react (yarn1) node_modules is relocatable → share it. The shared dir's leaf MUST
+# be named `node_modules` so Node resolves deps after following the symlink to the real path.
+ln -s ../../../../../shared/react/node_modules "$WT/tod_project/tod_django/react/node_modules"
+
+# The pnpm-workspace frontend can't be shared (relative workspace links); install it
+# (fast — pnpm's global store hardlinks) so the worktree is ready to run.
+( cd "$WT/tod_project/frontend" && pnpm install )
+"""

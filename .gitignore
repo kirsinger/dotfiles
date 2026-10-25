@@ -5,3 +5,5 @@ home/.config/herdr/*.lock
 home/.config/herdr/release-notes.json
 
 .DS_Store
+
+*.secrets.env

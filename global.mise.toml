@@ -201,15 +201,7 @@ else
   fi
 fi
 
-# The socket-API calls below need a running herdr server. The old tmux new-session
-# auto-started its server; mirror that by launching a headless one if none is up.
-if ! herdr status server 2>/dev/null | grep -q 'status: running'; then
-  nohup herdr server >/dev/null 2>&1 &
-  for _ in $(seq 1 50); do
-    herdr status server 2>/dev/null | grep -q 'status: running' && break
-    sleep 0.1
-  done
-fi
+mise run herdr_server default
 
 # Reuse an existing dev workspace for this target rather than clobbering it. The workspace
 # has a single tab: a plain shell cwd'd in the worktree (mise activates via the shell rc, so
@@ -231,64 +223,116 @@ fi
 """
 
 #
+# Herdr
+#
+
+[tasks.herdr_server]
+description = "Ensure a headless herdr server is running for a session"
+hide = true
+usage = '''
+arg "<session>" help="herdr session name"
+'''
+run = """
+set -eu
+SESSION="{{ usage.session }}"
+running() { herdr --session "$SESSION" status server 2>/dev/null | grep -q 'status: running'; }
+running && exit 0
+# Start from a clean login env. Panes inherit the server's env, so starting it with this
+# task's env (mise state, a project's [env], tool PATHs) would leak into every pane and
+# stop `mise activate` there from tracking the pane's own directory.
+env -i HOME="$HOME" USER="$USER" LOGNAME="${LOGNAME:-$USER}" SHELL="${SHELL:-/bin/zsh}" \\
+  TMPDIR="${TMPDIR:-/tmp}" LANG="${LANG:-en_US.UTF-8}" SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-}" \\
+  /bin/zsh -lc 'nohup herdr --session "$1" server >/dev/null 2>&1 &' _ "$SESSION"
+for _ in $(seq 1 50); do
+  running && exit 0
+  sleep 0.1
+done
+echo "Error: herdr server for session '$SESSION' did not start." >&2
+exit 1
+"""
+
+#
 # App
 #
 
-# The Edrolo app services. Each line is "label|cwd|command". start_edrolo opens one tab per
-# service in the current dev workspace; stop_edrolo closes the tabs with these labels.
-# Keep the label list here in sync with stop_edrolo below.
+# The Edrolo app stack runs in its own herdr session (edrolo-app), one tab per service.
+# Services bind fixed ports, so only one checkout's stack runs at a time.
 
 [tasks.start_edrolo]
-description = "Start the Edrolo app stack as tabs in the current dev workspace"
+description = "Start the Edrolo app stack for a worktree in the edrolo-app herdr session"
+usage = '''
+arg "[worktree]" help="Worktree to run (defaults to the main checkout)"
+complete "worktree" run="R=$HOME/projects/edrolo; (git -C \"$R\" branch --format='%(refname:short)'; git -C \"$R\" worktree list --porcelain 2>/dev/null | sed -n 's|^worktree ||p' | tail -n +2 | xargs -n1 basename) | sort -u"
+'''
 run = """
 set -eu
-if [ -z "${HERDR_WORKSPACE_ID:-}" ]; then
-  echo "Error: run start_edrolo from inside a herdr dev workspace (open one with: mise run dev)." >&2
+SESSION=edrolo-app
+ROOT="$MISE_CONFIG_ROOT/edrolo"
+WT_HOME=$(sed -n 's/^[[:space:]]*WORKTREE_HOME[[:space:]]*=[[:space:]]*//p' "$ROOT/mise.toml" 2>/dev/null | head -1 | tr -d '\\" ')
+WORKTREES_DIR="$MISE_CONFIG_ROOT/${WT_HOME:-worktrees/edrolo}"
+
+WORKTREE="{{ usage.worktree }}"
+if [ -z "$WORKTREE" ]; then
+  WORKTREE_PATH="$ROOT"
+  LABEL=edrolo
+else
+  LABEL=$(echo "$WORKTREE" | tr '/' '-')
+  WORKTREE_PATH="$WORKTREES_DIR/$LABEL"
+  if [ ! -d "$WORKTREE_PATH" ]; then
+    ( cd "$ROOT" && mise run add_worktree "$WORKTREE" )
+  fi
+fi
+if [ ! -d "$WORKTREE_PATH/tod_project" ]; then
+  echo "Error: not an Edrolo checkout (no tod_project under '$WORKTREE_PATH')." >&2
   exit 1
 fi
-WS="$HERDR_WORKSPACE_ID"
 
-# Locate the Edrolo worktree from where we're running (the dev workspace is cwd'd in it).
-ROOT=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --show-toplevel 2>/dev/null) || true
-if [ -z "$ROOT" ] || [ ! -d "$ROOT/tod_project" ]; then
-  echo "Error: not inside an Edrolo worktree (no tod_project under '$ROOT')." >&2
-  exit 1
-fi
+mise run herdr_server "$SESSION"
+H="herdr --session $SESSION"
+OLD=$($H workspace list | jq -r '.result.workspaces[].workspace_id')
 
-# label|cwd|command  (kept in sync with stop_edrolo's label list)
+# label|cwd|command. The first service takes the workspace's initial tab.
 SERVICES="docker|$HOME|lazydocker
-django|$ROOT/tod_project|./manage.py runserver
-vite|$ROOT/tod_project/frontend|pnpm dev:no-gen
-react|$ROOT/tod_project/tod_django/react|yarn install && yarn run dev"
+django|$WORKTREE_PATH/tod_project|mise exec -- ./manage.py runserver
+vite|$WORKTREE_PATH/tod_project/frontend|pnpm dev:no-gen
+react|$WORKTREE_PATH/tod_project/tod_django/react|yarn install && yarn run dev"
 
-printf '%s\\n' "$SERVICES" | while IFS='|' read -r label cwd cmd; do
-  # Idempotent: replace an existing tab for this service rather than duplicating it.
-  herdr tab list --workspace "$WS" | jq -r --arg l "$label" \
-    '.result.tabs[] | select(.label == $l) | .tab_id' \
-    | while read -r t; do herdr tab close "$t" >/dev/null 2>&1 || true; done
-  PANE=$(herdr tab create --workspace "$WS" --cwd "$cwd" --label "$label" \
-    | jq -r '.result.root_pane.pane_id')
-  herdr pane run "$PANE" "$cmd"
-  echo "started $label"
-done
+WS=
+while IFS='|' read -r label cwd cmd; do
+  if [ -z "$WS" ]; then
+    CREATE=$($H workspace create --cwd "$cwd" --label "$LABEL" --no-focus)
+    WS=$(echo "$CREATE" | jq -r '.result.workspace.workspace_id')
+    $H tab rename "$(echo "$CREATE" | jq -r '.result.tab.tab_id')" "$label" >/dev/null
+    PANE=$(echo "$CREATE" | jq -r '.result.root_pane.pane_id')
+  else
+    PANE=$($H tab create --workspace "$WS" --cwd "$cwd" --label "$label" --no-focus \\
+      | jq -r '.result.root_pane.pane_id')
+  fi
+  $H pane run "$PANE" "$cmd"
+  echo "started $label ($LABEL)"
+done <<EOF
+$SERVICES
+EOF
+
+# Close the previous stack only after the new workspace exists, so the session never
+# drops to zero workspaces.
+for w in $OLD; do $H workspace close "$w" >/dev/null 2>&1 || true; done
+$H workspace focus "$WS" >/dev/null
+
+if [ -z "${HERDR_ENV:-}" ]; then
+  herdr session attach "$SESSION"
+else
+  echo "Attach with: herdr session attach $SESSION"
+fi
 """
 
 [tasks.stop_edrolo]
-description = "Stop the Edrolo app stack and close its tabs in the current dev workspace"
+description = "Stop the Edrolo app stack (the edrolo-app herdr session)"
 run = """
 set -eu
-if [ -z "${HERDR_WORKSPACE_ID:-}" ]; then
-  echo "Error: run stop_edrolo from inside the herdr dev workspace where you started it." >&2
-  exit 1
+if herdr session list | awk '$1 == "edrolo-app" && $2 == "running" { found = 1 } END { exit !found }'; then
+  herdr session stop edrolo-app
+else
+  echo "edrolo-app is not running."
 fi
-WS="$HERDR_WORKSPACE_ID"
-
-# Closing a tab kills its pane's process tree. Labels kept in sync with start_edrolo.
-for label in docker django vite react; do
-  herdr tab list --workspace "$WS" | jq -r --arg l "$label" \
-    '.result.tabs[] | select(.label == $l) | .tab_id' \
-    | while read -r t; do
-        herdr tab close "$t" >/dev/null 2>&1 && echo "stopped $label" || true
-      done
-done
 """
