@@ -94,10 +94,9 @@ git -C "$ROOT" worktree list
 """
 
 [tasks.clean_worktrees]
-description = "Flag stale or merged worktrees of the current project and remove them on confirmation"
+description = "Flag stale or merged worktrees of the current project and pick which to remove"
 usage = '''
 flag "--days <days>" default="14" help="Flag worktrees unused for more than this many days"
-flag "--force" help="Also remove worktrees with uncommitted or untracked changes"
 '''
 run = """
 set -eu
@@ -108,7 +107,6 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
   exit 1
 fi
 DAYS="{{ usage.days }}"
-FORCE="{{ usage.force }}"
 HERE=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --show-toplevel)
 G="git -C $ROOT"
 
@@ -190,46 +188,61 @@ fi
 
 echo
 {
-  echo "WORKTREE|BRANCH|REASON|ACTION"
+  echo "WORKTREE|BRANCH|REASON|IF REMOVED"
   while IFS='|' read -r path branch reasons merged dirty; do
-    if [ -n "$dirty" ] && [ "$FORCE" != "true" ]; then
-      action="skip: uncommitted changes (use --force)"
-    elif [ -n "$merged" ] && [ -n "$branch" ]; then
-      action="remove worktree + branch"
+    if [ -n "$merged" ] && [ -n "$branch" ]; then
+      action="worktree + branch deleted"
     else
-      action="remove worktree, keep branch"
+      action="worktree deleted, branch kept"
     fi
-    [ -n "$dirty" ] && [ "$FORCE" = "true" ] && action="$action (discards changes)"
+    [ -n "$dirty" ] && action="$action; uncommitted changes lost"
     echo "$(basename "$path")|${branch:-detached}|$reasons|$action"
   done < "$FLAGGED"
 } | column -t -s '|'
 echo
 
-TOTAL=$(wc -l < "$FLAGGED" | tr -d ' ')
-SKIP=0
-[ "$FORCE" != "true" ] && SKIP=$(awk -F'|' '$5 != ""' "$FLAGGED" | wc -l | tr -d ' ')
-if [ $((TOTAL - SKIP)) -eq 0 ]; then
-  echo "All flagged worktrees have uncommitted changes; rerun with --force to remove them."
-  exit 0
-fi
 if ! ( : < /dev/tty ) 2>/dev/null; then
-  echo "Error: confirmation needs a terminal; nothing removed." >&2
+  echo "Error: choosing worktrees needs a terminal; nothing removed." >&2
   exit 1
 fi
-printf 'Remove %s worktree(s)? [y/N] ' "$((TOTAL - SKIP))"
-read -r answer < /dev/tty || answer=""
-case "$answer" in
-  y|Y|yes|YES) ;;
-  *) echo "Aborted; nothing removed."; exit 0 ;;
-esac
 
+# Each option is "label|N": gum shows the label and prints N, the line in $FLAGGED.
+# --selected matches labels and is comma-separated, so labels must not contain commas.
+# Worktrees with uncommitted changes start deselected.
+set --
+PRESELECT=""
+i=0
 while IFS='|' read -r path branch reasons merged dirty; do
-  if [ -n "$dirty" ] && [ "$FORCE" != "true" ]; then
-    continue
+  i=$((i + 1))
+  label=$(basename "$path" | tr ',' ' ')
+  if [ -n "$dirty" ]; then
+    label="$label  (uncommitted changes)"
+  else
+    PRESELECT="${PRESELECT:+$PRESELECT,}$label"
   fi
+  set -- "$@" "$label|$i"
+done < "$FLAGGED"
+
+SELECTED=$(gum choose --no-limit --height 20 --label-delimiter '|' --selected "$PRESELECT" \\
+  --header "Worktrees to remove (x toggles, ctrl+a toggles all, enter continues, esc aborts)" \\
+  "$@" < /dev/tty) || { echo "Aborted; nothing removed."; exit 0; }
+COUNT=$(printf '%s' "$SELECTED" | grep -c . || true)
+if [ "$COUNT" -eq 0 ]; then
+  echo "Nothing selected; nothing removed."
+  exit 0
+fi
+if ! gum confirm --default=false "Remove $COUNT worktree(s)?" < /dev/tty; then
+  echo "Aborted; nothing removed."
+  exit 0
+fi
+
+i=0
+while IFS='|' read -r path branch reasons merged dirty; do
+  i=$((i + 1))
+  printf '%s\\n' "$SELECTED" | grep -qx "$i" || continue
   if [ -d "$path" ]; then
-    # Cleanliness was checked during the scan; --force here only matters for dirty
-    # worktrees the user opted into, and submodules.
+    # --force: clean worktrees still hold ignored files (node_modules, .venv), and dirty
+    # ones were explicitly selected.
     $G worktree remove --force "$path"
   else
     $G worktree prune
