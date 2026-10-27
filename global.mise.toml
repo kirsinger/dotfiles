@@ -93,6 +93,38 @@ fi
 git -C "$ROOT" worktree list
 """
 
+[tasks.link_project_config]
+description = "Link a worktree's mise.toml to its project's shared config if missing"
+hide = true
+usage = '''
+arg "<root>" help="The project's main checkout"
+arg "<path>" help="The worktree"
+'''
+run = """
+set -eu
+ROOT="{{ usage.root }}"
+WT="{{ usage.path }}"
+# Only a main checkout whose mise.toml is a symlink uses a shared, untracked config; a
+# tracked mise.toml is already present in every worktree. Worktrees created with plain
+# `git worktree add` skip worktree_setup and so miss the link.
+[ -L "$ROOT/mise.toml" ] || exit 0
+[ "$WT" != "$ROOT" ] || exit 0
+if [ -e "$WT/mise.toml" ] || [ -L "$WT/mise.toml" ]; then
+  exit 0
+fi
+TARGET=$(readlink "$ROOT/mise.toml")
+case "$TARGET" in
+  /*) ;;
+  *) TARGET="$ROOT/$TARGET" ;;
+esac
+# Normalise without resolving symlinks, so the link names the shared path rather than
+# wherever that currently points (e.g. the nix store).
+TARGET="$(cd "$(dirname "$TARGET")" && pwd -L)/$(basename "$TARGET")"
+ln -s "$TARGET" "$WT/mise.toml"
+mise trust -q "$WT"
+echo "linked $WT/mise.toml -> $TARGET"
+"""
+
 [tasks.clean_worktrees]
 description = "Flag stale or merged worktrees of the current project and pick which to remove"
 usage = '''
@@ -292,6 +324,7 @@ WORKTREE_PATH="$WORKTREES_DIR/$DIR_NAME"
 if [ ! -d "$WORKTREE_PATH" ]; then
   ( cd "$ROOT" && mise run add_worktree "$WORKTREE" )
 fi
+mise run link_project_config "$ROOT" "$WORKTREE_PATH"
 
 # One workspace per worktree, labelled by worktree name. herdr is agent-aware, so the
 # agent's live state (working/blocked/done) shows in the sidebar. --no-focus creates it
@@ -361,6 +394,7 @@ else
   if [ ! -d "$WORKTREE_PATH" ]; then
     ( cd "$ROOT" && mise run add_worktree "$WORKTREE" )
   fi
+  mise run link_project_config "$ROOT" "$WORKTREE_PATH"
 fi
 
 mise run herdr_server default
