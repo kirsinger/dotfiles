@@ -68,6 +68,11 @@ in
       # mise: shims only provide tools; activation also applies each project's [env]
       #
       eval "$(mise activate zsh)"
+
+      # Start Claude without the project's mise env: it carries secrets, and an
+      # ANTHROPIC_API_KEY switches Claude to API billing. A SessionStart hook
+      # (home/.claude/hooks/mise-env.sh) re-applies the env without them.
+      claude() { ( mise deactivate; command claude "$@" ) }
     '';
     shellAliases = {
       ".." = "cd ..";
@@ -108,4 +113,10 @@ in
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/edrolo.mise.toml";
   home.file.".claude/CLAUDE.md".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/AGENTS.md";
+  home.file.".claude/skills/dev-env".source =
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/skills/dev-env";
+  home.file.".claude/skills/app".source =
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/skills/app";
+  home.file.".claude/skills/tidy".source =
+    config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/skills/tidy";
 }

@@ -109,6 +109,12 @@ WT="{{ usage.path }}"
 # `git worktree add` skip worktree_setup and so miss the link.
 [ -L "$ROOT/mise.toml" ] || exit 0
 [ "$WT" != "$ROOT" ] || exit 0
+# Older worktrees linked .venv to a shared venv that no longer exists; mise can't create
+# the per-checkout venv over the dangling link.
+if [ -L "$WT/.venv" ] && [ ! -e "$WT/.venv" ]; then
+  rm "$WT/.venv"
+  echo "removed dangling $WT/.venv link"
+fi
 if [ -e "$WT/mise.toml" ] || [ -L "$WT/mise.toml" ]; then
   exit 0
 fi
@@ -129,6 +135,8 @@ echo "linked $WT/mise.toml -> $TARGET"
 description = "Flag stale or merged worktrees of the current project and pick which to remove"
 usage = '''
 flag "--days <days>" default="14" help="Flag worktrees unused for more than this many days"
+flag "--list" help="Print the flagged worktrees as JSON and exit without removing anything"
+flag "--remove <names>" help="Remove these flagged worktrees (comma-separated directory names) without prompting"
 '''
 run = """
 set -eu
@@ -139,6 +147,8 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
   exit 1
 fi
 DAYS="{{ usage.days }}"
+LIST="{{ usage.list }}"
+REMOVE="{{ usage.remove }}"
 HERE=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --show-toplevel)
 G="git -C $ROOT"
 
@@ -158,7 +168,7 @@ $G worktree list --porcelain | awk '
   /^$/         { if (n++ && !locked) print path "|" branch; path = "" }
   END          { if (path != "" && n++ && !locked) print path "|" branch }
 ' > "$FLAGGED.all"
-echo "Checking $(wc -l < "$FLAGGED.all" | tr -d ' ') worktrees against $BASE..."
+echo "Checking $(wc -l < "$FLAGGED.all" | tr -d ' ') worktrees against $BASE..." >&2
 
 while IFS='|' read -r path branch; do
   [ "$path" = "$HERE" ] && continue
@@ -213,6 +223,14 @@ while IFS='|' read -r path branch; do
 done < "$FLAGGED.all"
 rm -f "$FLAGGED.all"
 
+if [ "$LIST" = "true" ]; then
+  jq -R -s 'split("\\n") | map(select(length > 0) | split("|") | {
+    name: (.[0] | split("/") | last), path: .[0], branch: .[1], reasons: .[2],
+    merged: (.[3] != ""), dirty: (.[4] != "")
+  })' "$FLAGGED"
+  exit 0
+fi
+
 if [ ! -s "$FLAGGED" ]; then
   echo "Nothing to clean up."
   exit 0
@@ -233,39 +251,53 @@ echo
 } | column -t -s '|'
 echo
 
-if ! ( : < /dev/tty ) 2>/dev/null; then
-  echo "Error: choosing worktrees needs a terminal; nothing removed." >&2
-  exit 1
-fi
-
-# Each option is "label|N": gum shows the label and prints N, the line in $FLAGGED.
-# --selected matches labels and is comma-separated, so labels must not contain commas.
-# Worktrees with uncommitted changes start deselected.
-set --
-PRESELECT=""
-i=0
-while IFS='|' read -r path branch reasons merged dirty; do
-  i=$((i + 1))
-  label=$(basename "$path" | tr ',' ' ')
-  if [ -n "$dirty" ]; then
-    label="$label  (uncommitted changes)"
-  else
-    PRESELECT="${PRESELECT:+$PRESELECT,}$label"
+if [ -n "$REMOVE" ]; then
+  # Selection by name, as indices into $FLAGGED like the gum path below. Validate every
+  # name before removing anything.
+  SELECTED=""
+  for name in $(echo "$REMOVE" | tr ',' ' '); do
+    i=$(awk -F'|' -v n="$name" '{ k = split($1, p, "/") } p[k] == n { print NR; exit }' "$FLAGGED")
+    if [ -z "$i" ]; then
+      echo "Error: '$name' is not a flagged worktree; nothing removed." >&2
+      exit 1
+    fi
+    SELECTED="$SELECTED$i
+"
+  done
+else
+  if ! ( : < /dev/tty ) 2>/dev/null; then
+    echo "Error: choosing worktrees needs a terminal; nothing removed." >&2
+    exit 1
   fi
-  set -- "$@" "$label|$i"
-done < "$FLAGGED"
+  # Each option is "label|N": gum shows the label and prints N, the line in $FLAGGED.
+  # --selected matches labels and is comma-separated, so labels must not contain commas.
+  # Worktrees with uncommitted changes start deselected.
+  set --
+  PRESELECT=""
+  i=0
+  while IFS='|' read -r path branch reasons merged dirty; do
+    i=$((i + 1))
+    label=$(basename "$path" | tr ',' ' ')
+    if [ -n "$dirty" ]; then
+      label="$label  (uncommitted changes)"
+    else
+      PRESELECT="${PRESELECT:+$PRESELECT,}$label"
+    fi
+    set -- "$@" "$label|$i"
+  done < "$FLAGGED"
 
-SELECTED=$(gum choose --no-limit --height 20 --label-delimiter '|' --selected "$PRESELECT" \\
-  --header "Worktrees to remove (x toggles, ctrl+a toggles all, enter continues, esc aborts)" \\
-  "$@" < /dev/tty) || { echo "Aborted; nothing removed."; exit 0; }
-COUNT=$(printf '%s' "$SELECTED" | grep -c . || true)
-if [ "$COUNT" -eq 0 ]; then
-  echo "Nothing selected; nothing removed."
-  exit 0
-fi
-if ! gum confirm --default=false "Remove $COUNT worktree(s)?" < /dev/tty; then
-  echo "Aborted; nothing removed."
-  exit 0
+  SELECTED=$(gum choose --no-limit --height 20 --label-delimiter '|' --selected "$PRESELECT" \\
+    --header "Worktrees to remove (x toggles, ctrl+a toggles all, enter continues, esc aborts)" \\
+    "$@" < /dev/tty) || { echo "Aborted; nothing removed."; exit 0; }
+  COUNT=$(printf '%s' "$SELECTED" | grep -c . || true)
+  if [ "$COUNT" -eq 0 ]; then
+    echo "Nothing selected; nothing removed."
+    exit 0
+  fi
+  if ! gum confirm --default=false "Remove $COUNT worktree(s)?" < /dev/tty; then
+    echo "Aborted; nothing removed."
+    exit 0
+  fi
 fi
 
 i=0
@@ -332,8 +364,8 @@ mise run link_project_config "$ROOT" "$WORKTREE_PATH"
 # create response and launch claude into it with `pane run` (atomic submit, no send-keys).
 PANE=$(herdr workspace create --cwd "$WORKTREE_PATH" --label "$DIR_NAME" --no-focus \
   | jq -r '.result.root_pane.pane_id')
-# `mise exec` applies the project's env (e.g. ANTHROPIC_API_KEY) + tools to claude.
-herdr pane run "$PANE" "mise exec -- claude"
+# The pane's interactive zsh resolves `claude` to the wrapper that drops the project's secrets.
+herdr pane run "$PANE" claude
 """
 
 [tasks.kill_agent]
@@ -515,7 +547,7 @@ EOF
 for w in $OLD; do $H workspace close "$w" >/dev/null 2>&1 || true; done
 $H workspace focus "$WS" >/dev/null
 
-if [ -z "${HERDR_ENV:-}" ]; then
+if [ -z "${HERDR_ENV:-}" ] && [ -t 0 ]; then
   herdr session attach "$SESSION"
 else
   echo "Attach with: herdr session attach $SESSION"
@@ -531,4 +563,32 @@ if herdr session list | awk '$1 == "edrolo-app" && $2 == "running" { found = 1 }
 else
   echo "edrolo-app is not running."
 fi
+"""
+
+[tasks.edrolo_logs]
+description = "Print recent output of an Edrolo app service running in the edrolo-app herdr session"
+usage = '''
+arg "<service>" help="Service tab to read" {
+  choices "docker" "django" "vite" "react"
+}
+flag "--lines <lines>" default="80" help="Number of lines to print"
+'''
+run = """
+set -eu
+H="herdr --session edrolo-app"
+if ! $H status server 2>/dev/null | grep -q 'status: running'; then
+  echo "edrolo-app is not running; start it with: mise run start_edrolo [worktree]" >&2
+  exit 1
+fi
+TAB=$($H tab list | jq -r --arg l "{{ usage.service }}" \\
+  'first(.result.tabs[] | select(.label == $l) | .tab_id) // empty')
+PANE=$($H pane list | jq -r --arg t "$TAB" \\
+  'first(.result.panes[] | select(.tab_id == $t) | .pane_id) // empty')
+if [ -z "$PANE" ]; then
+  echo "No {{ usage.service }} tab in edrolo-app." >&2
+  exit 1
+fi
+CWD=$($H pane list | jq -r --arg p "$PANE" '.result.panes[] | select(.pane_id == $p) | .cwd')
+echo "== {{ usage.service }} ($CWD)"
+$H pane read "$PANE" --source recent --lines "{{ usage.lines }}"
 """

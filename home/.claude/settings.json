@@ -50,5 +50,51 @@
       "Bash(bk agent stop:*) — scoped to Edrolo/edrolo Buildkite agents, avoid disrupting shared CI fleet",
       "Bash(aws s3 rm:*) and Bash(aws s3api delete-object:*) targeting edrolo-dms-cdc or any production-fargate-linked bucket"
     ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(mise run start_edrolo *)",
+      "Bash(mise run stop_edrolo)",
+      "Bash(mise run edrolo_logs *)",
+      "Bash(mise run sync_venv)",
+      "Bash(mise run sync_node)",
+      "Bash(mise run list_worktrees)",
+      "Bash(mise run add_worktree *)",
+      "Bash(mise run clean_worktrees --list *)",
+      "Bash(mise tasks *)"
+    ],
+    "ask": [
+      "Bash(mise run remove_worktree *)",
+      "Bash(mise run kill_agent *)",
+      "Bash(mise run clean_worktrees --remove *)",
+      "Bash(mise run db_tunnel *)",
+      "Bash(mise run fargate_shell *)",
+      "Bash(mise run aws_sso *)"
+    ],
+    "deny": [
+      "Bash(mise run fargate_shell production-au *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.dotfiles/home/.claude/hooks/mise-env.sh"
+          }
+        ]
+      }
+    ],
+    "CwdChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.dotfiles/home/.claude/hooks/mise-env.sh"
+          }
+        ]
+      }
+    ]
   }
 }
