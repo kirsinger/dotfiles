@@ -5,6 +5,7 @@ home/.config/herdr/*.sock
 home/.config/herdr/release-notes.json
 home/.config/herdr/session.json
 home/.config/herdr/session-snapshots/*
+home/.config/herdr/sessions/
 
 .DS_Store
 
