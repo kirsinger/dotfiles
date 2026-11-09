@@ -109,6 +109,8 @@ in
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/home/.claude/settings.json";
   home.file."projects/mise.toml".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/global.mise.toml";
+  home.file."projects/tickets".source =
+    config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/projects/knowledge/tickets";
   home.file."projects/shared/edrolo.mise.toml".source =
     config.lib.file.mkOutOfStoreSymlink "${dotfiles}/edrolo.mise.toml";
   home.file.".claude/CLAUDE.md".source =

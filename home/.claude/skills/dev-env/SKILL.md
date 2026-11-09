@@ -28,6 +28,14 @@ Each checkout has its own `.venv`, and a SessionStart hook applies the checkout'
 - `mise run clean_worktrees --list` prints stale (unused > 14 days) and merged worktrees as JSON. `--remove a,b` removes named ones, which needs the user's approval. Prefer the `/tidy` flow.
 - `mise run remove_worktree <name>` needs approval.
 
+## Tickets
+
+Tickets live in `~/projects/knowledge/tickets/<repo>/` (`~/projects/tickets` links there). `knowledge/AGENTS.md` describes the format.
+
+- `mise run tickets [--repo X] [--all]` lists open tickets by status and priority. `--all` includes DONE.
+- `mise run ticket_next [--repo X]` prints the path of the highest-priority TO_DO ticket.
+- `mise run work_ticket [ticket]` and `mise run ticket_sync` start agents and change ticket fields. Leave them to the user.
+
 ## Hand these to the user
 
 These need a browser, a long-lived terminal or production access. Ask the user to run them as `! mise run <task>`:
