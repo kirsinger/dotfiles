@@ -16,7 +16,6 @@ yarn = "1.22.22"     # matches react/package.json packageManager pin
 uv = "0.9.7"         # matches CI (.buildkite/pipeline.ci.yml) + edrolo.Dockerfile
 
 [env]
-# Must stay first: later entries (TUNNEL_PGPASSWORD) template values from this file.
 _.file = "{{ env.HOME }}/projects/shared/edrolo.secrets.env"
 _.python.venv = { path = ".venv", create = true }
 
@@ -24,8 +23,11 @@ _.python.venv = { path = ".venv", create = true }
 # The generalized tasks read this; without it they'd default to ~/projects/worktrees/<project>.
 WORKTREE_HOME = "worktrees"
 
-# For DB Tunnelling
-TUNNEL_PGPASSWORD = "{{ env.PGPASSWORD }}"
+# For DB Tunnelling. db_tunnel writes the devstack's current password here; it changes on
+# every restore. With TUNNEL_PGPASSWORD unset, Django and psql read it through libpq.
+PGPASSFILE = "{{ env.HOME }}/.local/state/edrolo/pgpass"
+# pgpass entries match on user, so psql needs it too. tunnel.py defaults TUNNEL_PGUSER to the same.
+PGUSER = "edrolo"
 
 # This is required for local deployments
 # I can never get it to work, so I just skip the new relic notification step
@@ -84,7 +86,7 @@ run = "export AWS_PROFILE='{{ usage.profile }}'"
 
 [tasks.db_tunnel]
 description = "Open an SSH tunnel to a dev DB on port 3333"
-run = "$MISE_CONFIG_ROOT/edx/devstack/db-tunnel.sh --local-port 3333"
+run = '$MISE_CONFIG_ROOT/edx/devstack/db-tunnel.sh --local-port 3333 --write-pgpass "$PGPASSFILE"'
 
 [tasks.fargate_shell]
 description = "Open an interactive shell inside a running Fargate task"

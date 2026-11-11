@@ -312,6 +312,11 @@ while IFS='|' read -r path branch reasons merged dirty; do
     $G worktree prune
   fi
   echo "removed $(basename "$path")"
+  WS=$(herdr workspace list 2>/dev/null | jq -r --arg n "$(basename "$path")" \\
+    'first(.result.workspaces[] | select(.label == $n) | .workspace_id) // empty' || true)
+  if [ -n "$WS" ]; then
+    herdr workspace close "$WS" >/dev/null && echo "  closed herdr workspace $(basename "$path")"
+  fi
   # -D: squash-merged branches aren't ancestors of BASE, so -d would refuse them.
   if [ -n "$merged" ] && [ -n "$branch" ]; then
     $G branch -D "$branch" >/dev/null && echo "  deleted branch $branch"
@@ -322,51 +327,6 @@ done < "$FLAGGED"
 #
 # Agents
 #
-
-[tasks.spawn_agent]
-description = "Spawn a Claude Code agent in a herdr workspace for a worktree"
-usage = '''
-arg "<worktree>" help="Worktree/branch to spawn an agent into"
-complete "worktree" run="R=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); R=${R%/.git}; (git -C \"$R\" branch --format='%(refname:short)'; git -C \"$R\" worktree list --porcelain 2>/dev/null | sed -n 's|^worktree ||p' | tail -n +2 | xargs -n1 basename) | sort -u"
-'''
-run = """
-set -eu
-ROOT=$(git -C "$MISE_ORIGINAL_CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || true
-ROOT=${ROOT:+$(dirname "$ROOT")}
-if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
-  echo "Error: not inside a git project under ~/projects (cwd: $MISE_ORIGINAL_CWD)." >&2
-  exit 1
-fi
-PROJECT=$(basename "$ROOT")
-# Read WORKTREE_HOME straight from the project's own mise.toml (the documented contract).
-# We parse the file rather than use `mise env`: a nested `mise` invoked from inside a running
-# mise task does NOT re-resolve the project's env, so it returns nothing and we'd silently
-# fall back to the default and misplace the worktree. Defaults to "worktrees/<project>".
-WT_HOME=$(sed -n 's/^[[:space:]]*WORKTREE_HOME[[:space:]]*=[[:space:]]*//p' "$ROOT/mise.toml" 2>/dev/null | head -1 | tr -d '\" ')
-WORKTREES_DIR="$MISE_CONFIG_ROOT/${WT_HOME:-worktrees/$PROJECT}"
-
-if [ -z "${HERDR_ENV:-}" ]; then
-  echo "Error: spawn_agent must be run from inside a herdr session." >&2
-  exit 1
-fi
-
-WORKTREE="{{ usage.worktree }}"
-DIR_NAME=$(echo "$WORKTREE" | tr '/' '-')
-WORKTREE_PATH="$WORKTREES_DIR/$DIR_NAME"
-if [ ! -d "$WORKTREE_PATH" ]; then
-  ( cd "$ROOT" && mise run add_worktree "$WORKTREE" )
-fi
-mise run link_project_config "$ROOT" "$WORKTREE_PATH"
-
-# One workspace per worktree, labelled by worktree name. herdr is agent-aware, so the
-# agent's live state (working/blocked/done) shows in the sidebar. --no-focus creates it
-# in the background (like tmux's detached new-window). Grab the root pane id from the
-# create response and launch claude into it with `pane run` (atomic submit, no send-keys).
-PANE=$(herdr workspace create --cwd "$WORKTREE_PATH" --label "$DIR_NAME" --no-focus \
-  | jq -r '.result.root_pane.pane_id')
-# The pane's interactive zsh resolves `claude` to the wrapper that drops the project's secrets.
-herdr pane run "$PANE" claude
-"""
 
 [tasks.kill_agent]
 description = "Close the herdr workspace running the agent for a worktree"
@@ -393,6 +353,60 @@ herdr workspace close "$TARGET"
 # Dev
 #
 
+[tasks.open_workspace]
+description = "Find or create the herdr dev workspace for a project checkout or worktree"
+hide = true
+usage = '''
+arg "<root>" help="The project's main checkout"
+arg "[worktree]" help="Worktree to open (defaults to the main checkout)"
+'''
+run = """
+set -eu
+ROOT="{{ usage.root }}"
+PROJECT=$(basename "$ROOT")
+# Read WORKTREE_HOME straight from the project's own mise.toml (the documented contract).
+# We parse the file rather than use `mise env`: a nested `mise` invoked from inside a running
+# mise task does NOT re-resolve the project's env, so it returns nothing and we'd silently
+# fall back to the default and misplace the worktree. Defaults to "worktrees/<project>".
+WT_HOME=$(sed -n 's/^[[:space:]]*WORKTREE_HOME[[:space:]]*=[[:space:]]*//p' "$ROOT/mise.toml" 2>/dev/null | head -1 | tr -d '\" ')
+WORKTREES_DIR="$MISE_CONFIG_ROOT/${WT_HOME:-worktrees/$PROJECT}"
+
+WORKTREE="{{ usage.worktree }}"
+if [ -z "$WORKTREE" ]; then
+  WORKTREE_PATH="$ROOT"
+  LABEL="$PROJECT"
+else
+  LABEL=$(echo "$WORKTREE" | tr '/' '-')
+  WORKTREE_PATH="$WORKTREES_DIR/$LABEL"
+  # stdout is reserved for this task's result.
+  if [ ! -d "$WORKTREE_PATH" ]; then
+    ( cd "$ROOT" && mise run add_worktree "$WORKTREE" ) >&2
+  fi
+  mise run link_project_config "$ROOT" "$WORKTREE_PATH" >&2
+fi
+
+mise run herdr_server default >&2
+
+# Reuse an existing dev workspace for this target rather than clobbering it. The workspace
+# has a single tab: a shell cwd'd in the worktree (mise activates via the shell rc, so the
+# project env is live).
+WS=$(herdr workspace list | jq -r --arg n "$LABEL" \
+  'first(.result.workspaces[] | select(.label == $n) | .workspace_id) // empty')
+STATE=existing
+if [ -z "$WS" ]; then
+  CREATE=$(herdr workspace create --cwd "$WORKTREE_PATH" --label "$LABEL" --no-focus)
+  WS=$(echo "$CREATE" | jq -r '.result.workspace.workspace_id')
+  herdr tab rename "$(echo "$CREATE" | jq -r '.result.tab.tab_id')" agent >/dev/null
+  # The command comes from the environment rather than a usage flag: usage values are
+  # substituted into this script as text, so quotes inside a command would break it.
+  if [ -n "${WORKSPACE_RUN:-}" ]; then
+    herdr pane run "$(echo "$CREATE" | jq -r '.result.root_pane.pane_id')" "$WORKSPACE_RUN" >/dev/null
+  fi
+  STATE=created
+fi
+echo "$WS $STATE"
+"""
+
 [tasks.dev]
 description = "Open a herdr dev workspace for a project/worktree"
 usage = '''
@@ -407,47 +421,253 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
   echo "Error: not inside a git project under ~/projects (cwd: $MISE_ORIGINAL_CWD)." >&2
   exit 1
 fi
-PROJECT=$(basename "$ROOT")
-# Read WORKTREE_HOME straight from the project's own mise.toml (the documented contract).
-# We parse the file rather than use `mise env`: a nested `mise` invoked from inside a running
-# mise task does NOT re-resolve the project's env, so it returns nothing and we'd silently
-# fall back to the default and misplace the worktree. Defaults to "worktrees/<project>".
-WT_HOME=$(sed -n 's/^[[:space:]]*WORKTREE_HOME[[:space:]]*=[[:space:]]*//p' "$ROOT/mise.toml" 2>/dev/null | head -1 | tr -d '\" ')
-WORKTREES_DIR="$MISE_CONFIG_ROOT/${WT_HOME:-worktrees/$PROJECT}"
-
 WORKTREE="{{ usage.worktree }}"
-if [ -z "$WORKTREE" ]; then
-  # No worktree given → the project's main checkout.
-  WORKTREE_PATH="$ROOT"
-  LABEL="$PROJECT"
-else
-  LABEL=$(echo "$WORKTREE" | tr '/' '-')
-  WORKTREE_PATH="$WORKTREES_DIR/$LABEL"
-  if [ ! -d "$WORKTREE_PATH" ]; then
-    ( cd "$ROOT" && mise run add_worktree "$WORKTREE" )
-  fi
-  mise run link_project_config "$ROOT" "$WORKTREE_PATH"
-fi
-
-mise run herdr_server default
-
-# Reuse an existing dev workspace for this target rather than clobbering it. The workspace
-# has a single tab: a plain shell cwd'd in the worktree (mise activates via the shell rc, so
-# the project env is live). Launch the agent yourself with `claude` once attached.
-WS=$(herdr workspace list | jq -r --arg n "$LABEL" \
-  'first(.result.workspaces[] | select(.label == $n) | .workspace_id) // empty')
-if [ -z "$WS" ]; then
-  CREATE=$(herdr workspace create --cwd "$WORKTREE_PATH" --label "$LABEL" --no-focus)
-  WS=$(echo "$CREATE" | jq -r '.result.workspace.workspace_id')
-  herdr tab rename "$(echo "$CREATE" | jq -r '.result.tab.tab_id')" agent >/dev/null
-fi
-herdr workspace focus "$WS" >/dev/null
+OUT=$(cd "$ROOT" && mise run open_workspace "$ROOT" ${WORKTREE:+"$WORKTREE"})
+herdr workspace focus "${OUT%% *}" >/dev/null
 
 # Attach this terminal to the session, unless we're already inside a herdr client — in that
 # case the focus above already switched the view.
 if [ -z "${HERDR_ENV:-}" ]; then
   herdr session attach default
 fi
+"""
+
+[tasks.plan]
+description = "Open the planning agent's herdr workspace in knowledge"
+run = """
+set -eu
+ROOT="$MISE_CONFIG_ROOT/knowledge"
+OUT=$(cd "$ROOT" && WORKSPACE_RUN="claude -n planning" mise run open_workspace "$ROOT")
+herdr workspace focus "${OUT%% *}" >/dev/null
+if [ -z "${HERDR_ENV:-}" ]; then
+  herdr session attach default
+fi
+"""
+
+#
+# Tickets
+#
+# A ticket is a markdown file at knowledge/tickets/<repo>/<NNNN>_<slug>.md, where <repo> is a
+# project directory under ~/projects. Its YAML frontmatter holds flat `key: value` fields:
+# title, status (TO_DO | IN_PROGRESS | DONE), priority (1-3, 1 most important), and the
+# optional jira, pr and session. knowledge/AGENTS.md documents the format for the planner.
+
+[tasks.ticket_index]
+description = "Print every ticket as a tab-separated row"
+hide = true
+run = """
+set -eu
+DIR=$(cd "$MISE_CONFIG_ROOT/knowledge/tickets" && pwd -P)
+# Columns: repo path status priority jira pr session branch title. Empty fields print as
+# "-" so that consumers splitting on tabs (column, read) don't collapse them.
+for f in "$DIR"/*/*.md; do
+  [ -e "$f" ] || continue
+  awk -v path="$f" '
+    NR == 1 { if ($0 != "---") exit; next }
+    $0 == "---" { ok = 1; exit }
+    {
+      i = index($0, ":")
+      if (!i) next
+      k = substr($0, 1, i - 1)
+      v = substr($0, i + 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", v)
+      gsub(/^"|"$/, "", v)
+      m[k] = v
+    }
+    END {
+      if (!ok) exit
+      n = split(path, p, "/")
+      repo = p[n - 1]
+      name = p[n]
+      sub(/\\.md$/, "", name)
+      # A Jira-linked ticket branches as <key>-<slug>, matching how Jira-linked branches are
+      # already named; others use the ticket filename.
+      if (m["jira"] != "") {
+        slug = name
+        sub(/^[0-9]+_/, "", slug)
+        branch = tolower(m["jira"]) "-" slug
+      } else {
+        branch = name
+      }
+      gsub(/_/, "-", branch)
+      split("status priority jira pr session", keys, " ")
+      for (j = 1; j <= 5; j++) if (m[keys[j]] == "") m[keys[j]] = "-"
+      print repo "\t" path "\t" m["status"] "\t" m["priority"] "\t" m["jira"] "\t" m["pr"] "\t" m["session"] "\t" branch "\t" m["title"]
+    }
+  ' "$f"
+done
+"""
+
+[tasks.ticket_set]
+description = "Set a frontmatter field in a ticket"
+hide = true
+usage = '''
+arg "<path>" help="Ticket file"
+arg "<key>" help="Field name"
+arg "<value>" help="Field value"
+'''
+run = """
+set -eu
+F="{{ usage.path }}"
+awk -v k="{{ usage.key }}" -v v="{{ usage.value }}" '
+  NR == 1 { print; next }
+  !end && $0 == "---" { if (!set) print k ": " v; end = 1; print; next }
+  !end && index($0, k ":") == 1 { print k ": " v; set = 1; next }
+  { print }
+' "$F" > "$F.tmp"
+mv "$F.tmp" "$F"
+"""
+
+[tasks.tickets]
+description = "List tickets by status and priority"
+usage = '''
+flag "--repo <repo>" help="Only this repo's tickets"
+flag "--all" help="Include DONE tickets"
+'''
+run = """
+set -eu
+TAB=$(printf '\\t')
+{
+  echo "TICKET${TAB}STATUS${TAB}P${TAB}JIRA${TAB}PR${TAB}BRANCH${TAB}TITLE"
+  mise run ticket_index | awk -F'\\t' -v repo="{{ usage.repo }}" -v all="{{ usage.all }}" '
+    (repo == "" || $1 == repo) && (all == "true" || $3 != "DONE") {
+      n = split($2, p, "/")
+      id = p[n]
+      sub(/_.*/, "", id)
+      pr = $6
+      if (pr != "-") { sub(/.*\\//, "", pr); pr = "#" pr }
+      rank = ($3 == "IN_PROGRESS") ? 0 : ($3 == "TO_DO") ? 1 : 2
+      print rank "\\t" $4 "\\t" $1 "/" id "\\t" $3 "\\t" $4 "\\t" $5 "\\t" pr "\\t" $8 "\\t" $9
+    }' | sort -t "$TAB" -k1,1n -k2,2n -k3,3 | cut -f3-
+} | column -t -s "$TAB"
+"""
+
+[tasks.ticket_next]
+description = "Print the path of the next ticket to work on (highest-priority TO_DO)"
+usage = '''
+flag "--repo <repo>" help="Only consider this repo's tickets"
+'''
+run = """
+set -eu
+TAB=$(printf '\\t')
+NEXT=$(mise run ticket_index | awk -F'\\t' -v repo="{{ usage.repo }}" '
+  $3 == "TO_DO" && (repo == "" || $1 == repo) {
+    p = ($4 == "-") ? 3 : $4
+    n = split($2, f, "/")
+    print p "\\t" f[n] "\\t" $2
+  }' | sort -t "$TAB" -k1,1n -k2,2 | head -1 | cut -f3)
+if [ -z "$NEXT" ]; then
+  echo "No TO_DO tickets." >&2
+  exit 1
+fi
+echo "$NEXT"
+"""
+
+[tasks.work_ticket]
+description = "Start (or resume) a Claude Code agent on a ticket in its own worktree and herdr workspace"
+usage = '''
+arg "[ticket]" help="Ticket path, <repo>/<number> or <number> (defaults to the next TO_DO ticket)"
+flag "--repo <repo>" help="Pick the next ticket from this repo only"
+flag "--attach" help="Switch to the agent's workspace once started"
+complete "ticket" run="mise run ticket_index 2>/dev/null | awk -F'\\t' '$3 != \"DONE\" { n = split($2, p, \"/\"); sub(/\\.md$/, \"\", p[n]); print $1 \"/\" p[n] }'"
+'''
+run = """
+set -eu
+TICKETS=$(cd "$MISE_CONFIG_ROOT/knowledge/tickets" && pwd -P)
+TAB=$(printf '\\t')
+ARG="{{ usage.ticket }}"
+REPO="{{ usage.repo }}"
+
+if [ -z "$ARG" ]; then
+  P=$(mise run ticket_next ${REPO:+--repo "$REPO"})
+elif [ -f "$ARG" ]; then
+  P=$(cd "$(dirname "$ARG")" && echo "$(pwd -P)/$(basename "$ARG")")
+else
+  MATCHES=""
+  for f in "$TICKETS"/$ARG*.md "$TICKETS"/${REPO:-*}/$ARG*.md; do
+    [ -e "$f" ] && MATCHES="$MATCHES$f
+"
+  done
+  MATCHES=$(printf '%s' "$MATCHES" | sort -u)
+  if [ "$(printf '%s' "$MATCHES" | grep -c .)" -ne 1 ]; then
+    echo "Error: '$ARG' must match exactly one ticket; matched:" >&2
+    printf '%s\\n' "${MATCHES:-  (none)}" >&2
+    exit 1
+  fi
+  P=$MATCHES
+fi
+
+ROW=$(mise run ticket_index | awk -F'\\t' -v p="$P" '$2 == p')
+if [ -z "$ROW" ]; then
+  echo "Error: $P is not a ticket (no frontmatter, or not under $TICKETS/<repo>/)." >&2
+  exit 1
+fi
+IFS="$TAB" read -r REPO P STATUS PRIO JIRA PR SESSION BRANCH TITLE <<EOF
+$ROW
+EOF
+
+ROOT="$MISE_CONFIG_ROOT/$REPO"
+if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  echo "Error: no git project at $ROOT for ticket $P." >&2
+  exit 1
+fi
+if [ "$STATUS" = DONE ]; then
+  echo "Error: $P is already DONE." >&2
+  exit 1
+fi
+
+# --add-dir lets the agent read its ticket and write follow-up tickets outside the worktree.
+if [ "$STATUS" = IN_PROGRESS ] && [ "$SESSION" != - ]; then
+  CMD="claude --resume $SESSION --add-dir $TICKETS"
+else
+  SESSION=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  PROMPT="Complete the ticket at $P. Keep to its scope. If the work grows, write a new TO_DO ticket in the same directory instead of expanding this one. Leave its status, pr and session fields alone. When the acceptance criteria are met, commit, push the branch and open a PR."
+  CMD="claude --session-id $SESSION -n $BRANCH --add-dir $TICKETS '$PROMPT'"
+fi
+
+OUT=$(cd "$ROOT" && WORKSPACE_RUN="$CMD" mise run open_workspace "$ROOT" "$BRANCH")
+WS=${OUT%% *}
+if [ "${OUT#* }" = existing ]; then
+  echo "Workspace $BRANCH already exists; left it as is." >&2
+else
+  mise run ticket_set "$P" status IN_PROGRESS
+  mise run ticket_set "$P" session "$SESSION"
+  echo "Started $REPO/$(basename "$P" .md) in workspace $BRANCH: $TITLE"
+fi
+
+if [ "{{ usage.attach }}" = true ]; then
+  herdr workspace focus "$WS" >/dev/null
+  if [ -z "${HERDR_ENV:-}" ]; then
+    herdr session attach default
+  fi
+fi
+"""
+
+[tasks.ticket_sync]
+description = "Record the PR of each in-progress ticket and mark tickets whose PR merged as DONE"
+run = """
+set -eu
+TAB=$(printf '\\t')
+# Nested commands read from /dev/null so they don't consume the loop's input.
+mise run ticket_index | while IFS="$TAB" read -r repo path status prio jira pr session branch title; do
+  [ "$status" = IN_PROGRESS ] || continue
+  FOUND=$(cd "$MISE_CONFIG_ROOT/$repo" && gh pr list --head "$branch" --state all --limit 1 \\
+    --json url,state --jq 'first // empty | "\\(.url) \\(.state)"' < /dev/null) || {
+    echo "$repo/$branch: gh pr list failed" >&2
+    continue
+  }
+  [ -n "$FOUND" ] || continue
+  URL=${FOUND% *}
+  STATE=${FOUND#* }
+  if [ "$pr" != "$URL" ]; then
+    mise run ticket_set "$path" pr "$URL" < /dev/null
+    echo "$repo/$branch: PR $URL"
+  fi
+  if [ "$STATE" = MERGED ]; then
+    mise run ticket_set "$path" status DONE < /dev/null
+    echo "$repo/$branch: DONE"
+  fi
+done
 """
 
 #
