@@ -38,6 +38,7 @@
       { app = "/Applications/Obsidian.app"; }
       { app = "/Applications/Figma.app"; }
       { app = "/Applications/Slack.app"; }
+      { app = "/Applications/Spotifast.app"; }
       { app = "/Applications/Utilities"; }
     ];
     dock.persistent-others = [];
@@ -50,13 +51,22 @@
     enable = true;
     user = "kai";
     autoMigrate = true;  # Clean any existing installation
+    trust = {
+      taps = [
+        "atlassian/homebrew-acli"
+      ];
+    };
   };
   homebrew = {
     enable = true;
     onActivation.cleanup = "zap";  # enforce installation via this config
     onActivation.autoUpdate = true;
     onActivation.extraFlags = [ "--force" ];
+    taps = [
+      "atlassian/homebrew-acli"
+    ];
     brews = [
+      "acli"
       "awscli"
       "buildkite/buildkite/bk@3"
       "gh"
@@ -78,6 +88,7 @@
     casks = [
       "claude-code"
       "coderabbit"
+      "crmne/tap/spotifast"
       "docker-desktop"
       "figma"
       "karabiner-elements"
